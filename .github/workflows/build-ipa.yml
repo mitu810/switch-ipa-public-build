@@ -123,6 +123,11 @@ jobs:
           IPA=$(ls -1 *.ipa games/*/*.ipa 2>/dev/null | head -1)
           if [ -z "$IPA" ]; then echo "::error::no IPA found"; exit 1; fi
           ls -lh "$IPA"
+          # The IPA is already built; the extraction, shader caches and source
+          # NSPs are no longer needed. Free them before splitting 15 GB.
+          rm -rf games/*/*_build || true
+          rm -f games/*/*.nsp || true
+          df -h /
           split -b 1800m "$IPA" ipa.part_
           ls -lh ipa.part_*
           gh release view "${{ inputs.ipa_tag }}" --repo "${{ env.PRIVATE_REPO }}" >/dev/null 2>&1 || \
