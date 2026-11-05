@@ -11,7 +11,7 @@ on:
       ipa_tag:
         description: 'Private release tag for the split IPA'
         required: false
-        default: 'ipa-botw-1.9.0'
+        default: 'ipa-botw-1.9.0-separate'
         type: string
       game_name:
         description: 'Game folder name'
@@ -111,33 +111,53 @@ jobs:
             rm -f "$GAME_DIR"/base.nsp "$GAME_DIR"/update.nsp
             echo "[watchdog] 已删除 base.nsp / update.nsp，释放磁盘空间（DLC 保留给解包阶段）"
           ) &
-          python3 scripts/build_ipa_from_nsp.py "games/${{ inputs.game_name }}" -k keys/prod.keys --allow-other-metal --gpu g16g
+          python3 scripts/build_ipa_from_nsp.py "games/${{ inputs.game_name }}" -k keys/prod.keys --allow-other-metal --gpu g16g --romfs separate
           rc=$?
           wait 2>/dev/null || true
           exit $rc
 
-      - name: Split IPA and upload to private release
+      - name: Upload small IPA and RomFS to private release
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
         run: |
           IPA=$(ls -1 *.ipa games/*/*.ipa 2>/dev/null | head -1)
+          ROMFS=$(find games -path '*_build/extract/*/RomFS.img' -type f 2>/dev/null | head -1)
           if [ -z "$IPA" ]; then echo "::error::no IPA found"; exit 1; fi
-          ls -lh "$IPA"
-          # The IPA is already built; the extraction, shader caches and source
-          # NSPs are no longer needed. Free them before splitting 15 GB.
-          rm -rf games/*/*_build || true
+          if [ -z "$ROMFS" ]; then echo "::error::no RomFS.img found"; exit 1; fi
+          ls -lh "$IPA" "$ROMFS"
+          # Keep extract/ (it holds RomFS.img); everything else in the build
+          # folder and the source NSPs can be removed to make upload room.
+          rm -rf games/*/*_build/shader games/*/*_build/ipa games/*/*_build/tmp \
+            games/*/*_build/logs games/*/*_build/aoc games/*/*_build/patched_* || true
           rm -f games/*/*.nsp || true
           df -h /
-          split -b 1800m "$IPA" ipa.part_
-          ls -lh ipa.part_*
           gh release view "${{ inputs.ipa_tag }}" --repo "${{ env.PRIVATE_REPO }}" >/dev/null 2>&1 || \
             gh release create "${{ inputs.ipa_tag }}" --repo "${{ env.PRIVATE_REPO }}" \
-              --title "IPA: Zelda BOTW 1.9.0 + DLC" \
+              --title "IPA + RomFS: Zelda BOTW 1.9.0 + DLC" \
               --notes "Built by public workflow run ${{ github.run_id }}"
-          gh release upload "${{ inputs.ipa_tag }}" ipa.part_* --repo "${{ env.PRIVATE_REPO }}" --clobber
+          CHUNK=$((1800 * 1024 * 1024))
+          BLOCK=$((1024 * 1024))
+          upload_chunks() {
+            file="$1"
+            prefix="$2"
+            total=$(stat -f %z "$file")
+            count=$(( (total + CHUNK - 1) / CHUNK ))
+            i=0
+            while [ "$i" -lt "$count" ]; do
+              skip=$(( i * CHUNK / BLOCK ))
+              blocks=$(( CHUNK / BLOCK ))
+              part=$(printf "%s.part_%02d" "$prefix" "$i")
+              dd if="$file" of="$part" bs="$BLOCK" skip="$skip" count="$blocks" 2>/dev/null
+              gh release upload "${{ inputs.ipa_tag }}" "$part" --repo "${{ env.PRIVATE_REPO }}" --clobber
+              rm -f "$part"
+              i=$((i + 1))
+            done
+          }
+          upload_chunks "$IPA" ipa
+          upload_chunks "$ROMFS" romfs
           echo "上传完成: ${{ inputs.ipa_tag }}"
 
       - name: Clean up
         if: always()
         run: |
-          rm -f ipa.part_* || true
+          rm -f ipa.part_* romfs.part_* || true
