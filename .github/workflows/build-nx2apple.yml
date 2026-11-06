@@ -1,0 +1,52 @@
+name: Build NX2Apple shared iPad app
+
+on:
+  workflow_dispatch:
+    inputs:
+      game:
+        description: Game to build, or assemble both completed frameworks
+        required: true
+        type: choice
+        options: [odyssey, party, combined]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nx2apple-${{ inputs.game }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 300
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
+      PRIVATE_REPO: mitu810/switch-ipa-builder
+      BUILD_GAME: ${{ inputs.game }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout pinned NX2Apple
+        uses: actions/checkout@v4
+        with:
+          repository: LNPANDY/NX2Apple
+          ref: 994ede741c0dae6e6ccd1d06a3f177c4f3b9ac61
+          path: nx2apple
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Prepare build tools
+        run: |
+          brew install xcodegen zstd glslang aria2
+          brew install --cask dotnet-sdk
+          python3 -m pip install lz4 'capstone>=5,<6' fonttools nsz zbic backports.zstd
+          sudo xcodebuild -runFirstLaunch
+          xcodebuild -downloadComponent MetalToolchain
+          git -C nx2apple config core.hooksPath .githooks
+          python3 nx2apple/tools/engine.py sync
+          git -C nx2apple/engine submodule update --init --recursive
+          df -h .
+      - name: Build and publish only to private release
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: python3 ci/nx2apple_build.py
