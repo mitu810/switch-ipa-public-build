@@ -151,6 +151,14 @@ def build():
            CONFIG[game_mode][2] if game_mode in CONFIG else 'nx2apple-mario-library')
     release(tag)
     try:
+        if device_resume:
+            patch = ROOT / 'ci/patches/hid-forced-vibration.patch'
+            run(['git', '-C', ENGINE, 'apply', '--check', patch])
+            run(['git', '-C', ENGINE, 'apply', patch])
+            tests = ENGINE / 'dm/host/tests'
+            run(['make', '-C', tests, 'GAME=0100000000010000', 'build/t_hid', 'build/t_haptics'])
+            run([tests / 'build/t_hid'], env=dict(os.environ, TMPDIR=str(tests / 'build')))
+            run([tests / 'build/t_haptics'])
         frameworks = []
         outputs = []
         if MODE == 'combined':
@@ -194,13 +202,15 @@ def build():
                     tar.extractall(work, filter='data')
                 entry = [sys.executable, ROOT / 'ci/nx2apple_capture.py', '--device-captures',
                          resume / 'glslc_capture', '--engine', ENGINE, '--request', request]
+            if device_capture or device_resume:
+                env_file = DATA / 'device-capture.env'
+                env_file.write_text(f'DM_GLSLC_CAPTURE=games/{tid}/glslc_capture\nDM_NVN_COUNT=1\n')
+                extra = ['--env-file', env_file, '--app-name',
+                         'Super Mario Party (diagnostic capture)' if device_capture else 'Super Mario Party (experimental)']
             if device_capture:
                 request = DATA / 'device-capture-request.json'
                 entry = [sys.executable, ROOT / 'ci/nx2apple_capture.py', '--bootstrap-device-capture',
                          '--engine', ENGINE, '--request', request]
-                env_file = DATA / 'device-capture.env'
-                env_file.write_text(f'DM_GLSLC_CAPTURE=games/{tid}/glslc_capture\nDM_NVN_COUNT=1\n')
-                extra = ['--env-file', env_file, '--app-name', 'Super Mario Party (diagnostic capture)']
             logged([*entry, inputs, '-k', keys,
                     '--title-id', tid, '--work-dir', work, '--shell-framework', fwdir,
                     '--romfs', 'separate', '--gpu', 'none', '--language', 'zh-Hans', '--progress', 'lines', *extra],
@@ -218,7 +228,7 @@ def build():
                 raise RuntimeError(f'Expected one game RomFS, found {len(images)}')
             if not metal4_fix:
                 outputs.append(images[0])
-            if metal4_fix:
+            if metal4_fix or device_resume:
                 # The launcher's Metal 4 toggle needs these even if the game's
                 # profile defaults to classic Metal. Validate the actual package.
                 sys.path.insert(0, str(ENGINE / 'dm/tools'))
@@ -280,7 +290,8 @@ def build():
             result['capture_request'] = json.loads(request.read_text())
         if device_resume:
             result['device_capture_inputs'] = capture_record
-        if metal4_fix:
+            result['host_patch_sha256'] = hashlib.sha256(patch.read_bytes()).hexdigest()
+        if metal4_fix or device_resume:
             result['pulling_library_audit'] = pulling_audit
         for path in outputs:
             result['files'].append(upload_file(tag, path))
