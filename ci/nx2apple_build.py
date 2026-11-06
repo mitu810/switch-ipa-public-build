@@ -71,7 +71,13 @@ def logged(args, log, env=None):
         started = time.monotonic()
         while process.poll() is None:
             time.sleep(30)
-            print(f'{log.stem}: {int(time.monotonic()-started)} seconds; private log {log.stat().st_size} bytes', flush=True)
+            size = log.stat().st_size
+            with log.open('rb') as source:
+                source.seek(max(0, size - 8192))
+                tail = source.read().decode(errors='replace')
+            progress = re.findall(r'compiling: (\d+)%, ([\d,]+)/([\d,]+) shaders', tail)
+            suffix = f'; shaders {progress[-1][1]}/{progress[-1][2]} ({progress[-1][0]}%)' if progress else ''
+            print(f'{log.stem}: {int(time.monotonic()-started)} seconds; private log {size} bytes{suffix}', flush=True)
         if process.returncode:
             raise RuntimeError(f'{log.stem} failed ({process.returncode}); see private diagnostic archive')
 
@@ -127,14 +133,16 @@ def wait_for_inputs(tag):
         time.sleep(30)
 
 def build():
-    if MODE not in (*CONFIG, 'combined'):
+    if MODE not in (*CONFIG, 'party-capture', 'combined'):
         raise ValueError('Unknown game')
+    device_capture = MODE == 'party-capture'
+    game_mode = 'party' if device_capture else MODE
     if capture(['gh', 'api', 'repos/' + REPO, '--jq', '.private']).strip() != 'true':
         raise RuntimeError('Assets destination is not private')
     DATA.mkdir(parents=True, exist_ok=True)
-    if MODE in CONFIG:
-        wait_for_inputs(CONFIG[MODE][1])
-    tag = CONFIG[MODE][2] if MODE in CONFIG else 'nx2apple-mario-library'
+    if game_mode in CONFIG:
+        wait_for_inputs(CONFIG[game_mode][1])
+    tag = 'nx2apple-party-device-capture' if device_capture else CONFIG[game_mode][2] if game_mode in CONFIG else 'nx2apple-mario-library'
     release(tag)
     try:
         frameworks = []
@@ -149,7 +157,7 @@ def build():
                     tar.extractall(dest / 'frameworks', filter='data')
                 frameworks.append(dest / 'frameworks' / f'DmGame{tid}.framework')
         else:
-            tid, source_tag, _ = CONFIG[MODE]
+            tid, source_tag, _ = CONFIG[game_mode]
             inputs = DATA / 'inputs'
             m = restore_files(source_tag, 'manifest.json', inputs)
             if m['title_id'] != tid or {f['name'] for f in m['files']} - {'base.nsp', 'base.nsz', 'update.nsp', 'update.nsz'}:
@@ -157,9 +165,18 @@ def build():
             keys = download('rom-zelda-botw', 'prod.keys', DATA / 'keys')
             work = inputs / 'build'
             fwdir = inputs / 'frameworks'
-            logged([sys.executable, ENGINE / 'scripts/build_ipa_from_nsp.py', inputs, '-k', keys,
+            entry = [sys.executable, ENGINE / 'scripts/build_ipa_from_nsp.py']
+            extra = []
+            if device_capture:
+                request = DATA / 'device-capture-request.json'
+                entry = [sys.executable, ROOT / 'ci/nx2apple_capture.py', '--bootstrap-device-capture',
+                         '--engine', ENGINE, '--request', request]
+                env_file = DATA / 'device-capture.env'
+                env_file.write_text(f'DM_GLSLC_CAPTURE=games/{tid}/glslc_capture\nDM_NVN_COUNT=1\n')
+                extra = ['--env-file', env_file, '--app-name', 'Super Mario Party (diagnostic capture)']
+            logged([*entry, inputs, '-k', keys,
                     '--title-id', tid, '--work-dir', work, '--shell-framework', fwdir,
-                    '--romfs', 'separate', '--gpu', 'none', '--language', 'zh-Hans', '--progress', 'lines'],
+                    '--romfs', 'separate', '--gpu', 'none', '--language', 'zh-Hans', '--progress', 'lines', *extra],
                    DATA / 'game-build.log')
             framework = fwdir / f'DmGame{tid}.framework'
             if not (framework / 'game.manifest.json').is_file():
@@ -173,6 +190,20 @@ def build():
             if len(images) != 1:
                 raise RuntimeError(f'Expected one game RomFS, found {len(images)}')
             outputs.append(images[0])
+            if device_capture:
+                # Preserve the expensive offline shader work for the full build
+                # after the iPad returns the missing runtime compiler outputs.
+                cache_archive = DATA / 'shader-cache.tar.gz'
+                with tarfile.open(cache_archive, 'w:gz', compresslevel=1) as tar:
+                    tar.add(work / 'shader', arcname='shader')
+                outputs.extend([cache_archive, request])
+                old = DATA / 'odyssey'
+                previous = restore_files(CONFIG['odyssey'][2], 'output-manifest.json', old, {'framework.tar.gz'})
+                if previous['nx2apple_commit'] != capture(['git', '-C', NX, 'rev-parse', 'HEAD']).strip():
+                    raise ValueError('Odyssey framework revision differs from the diagnostic shell')
+                with tarfile.open(old / 'framework.tar.gz') as tar:
+                    tar.extractall(old / 'frameworks', filter='data')
+                frameworks.insert(0, old / 'frameworks/DmGame0100000000010000.framework')
         shell = DATA / 'shell'
         env = dict(os.environ, SHELL_DIR=str(shell), DM_SHELL_FRAMEWORKS='\n'.join(map(str, frameworks)),
                    DM_SHELL_PACKAGE=str(NX / 'frontend-ios'), DM_BUNDLE_ID='org.nxnative.shell',
@@ -192,6 +223,8 @@ def build():
         result = {'schema': 1, 'mode': MODE, 'nx2apple_commit': capture(['git', '-C', NX, 'rev-parse', 'HEAD']).strip(),
                   'engine_pin': (NX / '.upstream-ref').read_text().strip(), 'bundle_id': 'org.nxnative.shell',
                   'run_id': os.environ.get('GITHUB_RUN_ID'), 'files': []}
+        if device_capture:
+            result['capture_request'] = json.loads(request.read_text())
         for path in outputs:
             result['files'].append(upload_file(tag, path))
         manifest = DATA / 'output-manifest.json'

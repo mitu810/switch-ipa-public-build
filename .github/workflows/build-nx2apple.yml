@@ -7,7 +7,7 @@ on:
         description: Game to build, or assemble both completed frameworks
         required: true
         type: choice
-        options: [odyssey, party, combined]
+        options: [odyssey, party, party-capture, combined]
 
 permissions:
   contents: read
@@ -49,4 +49,6 @@ jobs:
       - name: Build and publish only to private release
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
-        run: python3 ci/nx2apple_build.py
+        run: |
+          python3 -m unittest discover -s ci -p 'test_nx2apple_capture.py'
+          python3 ci/nx2apple_build.py
