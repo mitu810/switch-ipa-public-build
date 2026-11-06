@@ -113,12 +113,27 @@ def diagnostics(tag):
                 tar.add(path, arcname=path.relative_to(DATA))
     run(['gh', 'release', 'upload', tag, archive, '--repo', REPO, '--clobber'])
 
+def wait_for_inputs(tag):
+    deadline = time.monotonic() + 3600
+    while True:
+        result = subprocess.run(['gh', 'release', 'view', tag, '--repo', REPO, '--json', 'assets',
+                                 '--jq', '[.assets[].name] | index("manifest.json") != null'],
+                                text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        if result.returncode == 0 and result.stdout.strip() == 'true':
+            return
+        if time.monotonic() > deadline:
+            raise TimeoutError('Private input upload has not completed')
+        print('Waiting for the verified private input manifest...', flush=True)
+        time.sleep(30)
+
 def build():
     if MODE not in (*CONFIG, 'combined'):
         raise ValueError('Unknown game')
     if capture(['gh', 'api', 'repos/' + REPO, '--jq', '.private']).strip() != 'true':
         raise RuntimeError('Assets destination is not private')
     DATA.mkdir(parents=True, exist_ok=True)
+    if MODE in CONFIG:
+        wait_for_inputs(CONFIG[MODE][1])
     tag = CONFIG[MODE][2] if MODE in CONFIG else 'nx2apple-mario-library'
     release(tag)
     try:
