@@ -9,6 +9,7 @@ from unittest.mock import patch
 os.environ.setdefault('PRIVATE_REPO', 'test/private')
 os.environ.setdefault('BUILD_GAME', 'zelda-library')
 import nx2apple_zelda as z
+import run_zelda_pipeline as pipeline
 
 
 class LegacyInputIntegrity(unittest.TestCase):
@@ -51,6 +52,61 @@ class LegacyInputIntegrity(unittest.TestCase):
     def test_reordered_parts_rejected(self):
         with self.assertRaisesRegex(ValueError, 'part ordering'):
             self.run_fixture(lambda data, m: m['files'][0]['parts'].reverse())
+
+
+class DisposableInputCleanup(unittest.TestCase):
+    def fixture(self, root):
+        directory = root / 'private-build/inputs'
+        aoc = directory / 'build/aoc'
+        aoc.mkdir(parents=True)
+        for name in ('1.img', '2.img'):
+            (aoc / name).write_bytes(b'extracted DLC')
+        names = ('base.nsp', 'update.nsp', 'dlc1.nsp', 'dlc2.nsp')
+        for name in names:
+            (directory / name).write_bytes(b'verified input')
+        proof = {'title_id': z.TITLE, 'files': [
+            {'name': n, 'size': 14, 'sha256': hashlib.sha256(b'verified input').hexdigest()} for n in names]}
+        (directory.parent / 'verified-inputs.json').write_text(json.dumps(proof))
+        return directory, aoc, names
+
+    def test_only_disposable_sources_removed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            directory, aoc, names = self.fixture(root)
+            with patch.object(Path, 'cwd', return_value=root), patch.dict(os.environ, GITHUB_ACTIONS='true'):
+                pipeline.discard_extracted_inputs(directory, aoc)
+            self.assertFalse(any((directory / n).exists() for n in names))
+            self.assertTrue((aoc / '1.img').is_file())
+            self.assertTrue((directory.parent / 'verified-inputs.json').is_file())
+
+    def test_non_ci_cleanup_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            directory, aoc, names = self.fixture(root)
+            with patch.object(Path, 'cwd', return_value=root), patch.dict(os.environ, GITHUB_ACTIONS='false'):
+                with self.assertRaisesRegex(ValueError, 'restricted'):
+                    pipeline.discard_extracted_inputs(directory, aoc)
+            self.assertTrue(all((directory / n).is_file() for n in names))
+
+    def test_incomplete_extraction_preserves_all_inputs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            directory, aoc, names = self.fixture(root)
+            (aoc / '2.img').unlink()
+            with patch.object(Path, 'cwd', return_value=root), patch.dict(os.environ, GITHUB_ACTIONS='true'):
+                with self.assertRaisesRegex(ValueError, 'not completed'):
+                    pipeline.discard_extracted_inputs(directory, aoc)
+            self.assertTrue(all((directory / n).is_file() for n in names))
+
+    def test_changed_input_preserves_all_inputs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            directory, aoc, names = self.fixture(root)
+            (directory / 'update.nsp').write_bytes(b'changed')
+            with patch.object(Path, 'cwd', return_value=root), patch.dict(os.environ, GITHUB_ACTIONS='true'):
+                with self.assertRaisesRegex(ValueError, 'changed'):
+                    pipeline.discard_extracted_inputs(directory, aoc)
+            self.assertTrue(all((directory / n).is_file() for n in names))
 
 
 if __name__ == '__main__':

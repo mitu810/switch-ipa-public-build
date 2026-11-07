@@ -40,14 +40,16 @@ jobs:
         run: |
           df -h /
           test -d /Applications/Xcode_27.2.app
-          for unused_xcode in \
-            /Applications/Xcode_27.app /Applications/Xcode_27.0.app /Applications/Xcode_27.0.0.app \
-            /Applications/Xcode_27.1.app /Applications/Xcode_27.1.0.app; do
+          for unused_xcode in /Applications/Xcode*.app; do
+            [ "$unused_xcode" != /Applications/Xcode_27.2.app ] || continue
             if [ -d "$unused_xcode" ] || [ -L "$unused_xcode" ]; then
               sudo rm -rf "$unused_xcode"
             fi
           done
           sudo ln -sfn /Applications/Xcode_27.2.app /Applications/Xcode.app
+          xcrun simctl delete all || true
+          xcrun simctl runtime delete all || true
+          sudo du -sh /Applications/Xcode_27.2.app /Library/Developer/CoreSimulator || true
           df -h /
       - name: Prepare build tools
         run: |

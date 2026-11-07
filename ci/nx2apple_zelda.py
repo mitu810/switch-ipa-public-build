@@ -4,8 +4,11 @@ import json
 import os
 import re
 import shutil
+import signal
+import subprocess
 import sys
 import tarfile
+import time
 from pathlib import Path
 
 import nx2apple_build as b
@@ -13,6 +16,44 @@ import nx2apple_build as b
 TITLE = '01007EF00011E000'
 TAG = 'nx2apple-zelda-library-1.9.0'
 INPUT_TAG = 'rom-zelda-botw'
+
+
+def logged(args, log, env):
+    """Private progress survives runner loss; reserve room for final diagnostics."""
+    with log.open('wb') as output:
+        process = subprocess.Popen([str(a) for a in args], stdout=output, stderr=subprocess.STDOUT,
+                                   env=env, start_new_session=True)
+        last_upload = 0
+        while process.poll() is None:
+            free = shutil.disk_usage(b.DATA).free
+            if time.monotonic() - last_upload >= 120 or free < 3 * 1024 ** 3:
+                progress = b.DATA / 'build-progress.json'
+                progress.write_text(json.dumps({'run_id': os.environ.get('GITHUB_RUN_ID'),
+                    'step': log.stem, 'time': time.time(), 'free_bytes': free,
+                    'log_bytes': log.stat().st_size}, indent=2) + '\n')
+                tail = b.DATA / 'build-progress-tail.log'
+                with log.open('rb') as source:
+                    source.seek(max(0, log.stat().st_size - 16384))
+                    tail.write_bytes(source.read())
+                try:
+                    subprocess.run(['gh', 'release', 'upload', TAG, str(progress), str(tail),
+                                    '--repo', b.REPO, '--clobber'], timeout=60, check=False,
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except subprocess.TimeoutExpired:
+                    print('Private progress upload timed out; compilation continues', flush=True)
+                last_upload = time.monotonic()
+                print(f'{log.stem}: {log.stat().st_size} log bytes; {free / 2**30:.1f} GiB free', flush=True)
+            if free < 3 * 1024 ** 3 and process.poll() is None:
+                os.killpg(process.pid, signal.SIGTERM)
+                try:
+                    process.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.wait()
+                raise RuntimeError('Stopped before the runner exhausts its diagnostic disk reserve')
+            time.sleep(15)
+        if process.returncode:
+            raise RuntimeError(f'{log.stem} failed ({process.returncode}); see private diagnostics')
 
 
 def sha(path):
@@ -97,6 +138,7 @@ def previous(tag, title):
         raise ValueError('Framework from another NX2Apple revision')
     with tarfile.open(dest / 'framework.tar.gz') as source:
         source.extractall(dest / 'frameworks', filter='data')
+    (dest / 'framework.tar.gz').unlink()
     return dest / 'frameworks' / f'DmGame{title}.framework', m
 
 
@@ -106,6 +148,8 @@ def main():
     b.DATA.mkdir(parents=True, exist_ok=True)
     b.release(TAG)
     try:
+        if shutil.disk_usage(b.DATA).free < 48 * 1024 ** 3:
+            raise RuntimeError('Need 48 GiB free before restoring BOTW inputs')
         patch = b.ROOT / 'ci/patches/hid-forced-vibration.patch'
         b.run(['git', '-C', b.ENGINE, 'apply', '--check', patch])
         b.run(['git', '-C', b.ENGINE, 'apply', patch])
@@ -120,7 +164,7 @@ def main():
         work, fwdir = inputs / 'build', inputs / 'frameworks'
         env_file = b.DATA / 'zelda.env'
         env_file.write_text('DM_PSO_BUNDLE=off\n')
-        b.logged([sys.executable, b.ENGINE / 'scripts/build_ipa_from_nsp.py', inputs, '-k', keys,
+        logged([sys.executable, b.ROOT / 'ci/run_zelda_pipeline.py', b.ENGINE / 'scripts/build_ipa_from_nsp.py', inputs, '-k', keys,
                   '--title-id', TITLE, '--work-dir', work, '--shell-framework', fwdir,
                   '--romfs', 'separate', '--gpu', 'none', '--language', 'zh-Hans', '--progress', 'lines',
                   '--env-file', env_file], b.DATA / 'game-build.log', dict(os.environ, IOS_PULL='1'))
@@ -155,6 +199,28 @@ def main():
         from romfs_image import same_identity
         game_data['local_romfs_reusable'] = same_identity(zm['romfs_identity'], source_manifest['local_romfs_identity'])
         (b.DATA / 'game-data-manifest.json').write_text(json.dumps(game_data, indent=2) + '\n')
+        early_outputs = [zelda_archive, aoc_archive, b.DATA / 'game-data-manifest.json', b.DATA / 'verified-inputs.json']
+        if not game_data['local_romfs_reusable']:
+            images = list((work / 'extract').rglob('RomFS.img'))
+            if len(images) != 1:
+                raise ValueError('Expected one replacement BOTW image')
+            replacement = b.DATA / 'RomFS.img'
+            images[0].rename(replacement)
+            early_outputs.append(replacement)
+        early_files = [b.upload_file(TAG, path) for path in early_outputs]
+        checkpoint = b.DATA / 'zelda-checkpoint.json'
+        checkpoint.write_text(json.dumps({'schema': 1, 'run_id': os.environ.get('GITHUB_RUN_ID'),
+            'nx2apple_commit': b.capture(['git', '-C', b.NX, 'rev-parse', 'HEAD']).strip(),
+            'host_patch_sha256': sha(patch), 'audit': zelda_audit, 'game_data': game_data,
+            'files': early_files}, indent=2) + '\n')
+        b.run(['gh', 'release', 'upload', TAG, checkpoint, '--repo', b.REPO, '--clobber'])
+        # Framework resources are self-contained and outside work/. Preserve logs
+        # before dropping extracted images, duplicate libraries and Xcode staging.
+        for path in work.rglob('*.log'):
+            target = b.DATA / 'saved-build-logs' / path.relative_to(work)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target)
+        shutil.rmtree(work)
         odyssey, om = previous('nx2apple-odyssey-1.4.1-metal4', '0100000000010000')
         pair_source = b.download('nx2apple-odyssey-1.4.1-metal4', 'pso-pairs-source.json', b.DATA / 'odyssey-pairs')
         pair_file = b.download('nx2apple-odyssey-1.4.1-metal4', 'pso_pairs.tsv', pair_source.parent)
@@ -174,7 +240,7 @@ def main():
         shell = b.DATA / 'shell'
         env = dict(os.environ, SHELL_DIR=str(shell), DM_SHELL_FRAMEWORKS='\n'.join(map(str, frameworks)),
                    DM_SHELL_PACKAGE=str(b.NX / 'frontend-ios'), DM_BUNDLE_ID='org.nxnative.shell', FONT_PY=sys.executable)
-        b.logged(['bash', b.ENGINE / 'dm/ios/tools/build_shell.sh', '--build'], b.DATA / 'shell-build.log', env)
+        logged(['bash', b.ENGINE / 'dm/ios/tools/build_shell.sh', '--build'], b.DATA / 'shell-build.log', env)
         app = shell / 'dd/Build/Products/Release-iphoneos/DmShell.app'
         b.run(['xattr', '-cr', app])
         b.run(['codesign', '--force', '--sign', '-', '--entitlements', shell / 'Gen/DmShell.entitlements', app / 'DmShell'])
@@ -183,18 +249,13 @@ def main():
         b.run(['ditto', app, payload / 'DmShell.app'])
         ipa = b.DATA / 'NX2Apple.ipa'
         b.run(['ditto', '-c', '-k', '--sequesterRsrc', '--keepParent', payload, ipa])
-        outputs = [zelda_archive, aoc_archive, audit_file, b.DATA / 'game-data-manifest.json', b.DATA / 'verified-inputs.json', ipa]
-        if not game_data['local_romfs_reusable']:
-            images = list((work / 'extract').rglob('RomFS.img'))
-            if len(images) != 1:
-                raise ValueError('Expected one replacement BOTW image')
-            outputs.append(images[0])
+        outputs = [audit_file, ipa]
         result = {'schema': 1, 'mode': 'zelda-library', 'nx2apple_commit': b.capture(['git', '-C', b.NX, 'rev-parse', 'HEAD']).strip(),
                   'engine_pin': (b.NX / '.upstream-ref').read_text().strip(), 'bundle_id': 'org.nxnative.shell',
                   'run_id': os.environ.get('GITHUB_RUN_ID'), 'metal4_audits': audits,
                   'game_data': game_data, 'reused_runs': {'odyssey': om['run_id'], 'party': pm['run_id']},
                   'host_patch_sha256': sha(patch),
-                  'device_validation': 'deferred_by_user', 'files': []}
+                  'device_validation': 'deferred_by_user', 'files': early_files}
         for path in outputs:
             result['files'].append(b.upload_file(TAG, path))
         manifest = b.DATA / 'output-manifest.json'
