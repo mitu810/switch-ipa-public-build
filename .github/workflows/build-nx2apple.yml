@@ -7,7 +7,7 @@ on:
         description: Game to build, or assemble both completed frameworks
         required: true
         type: choice
-        options: [odyssey, odyssey-metal4, party, party-capture, party-resume, combined]
+        options: [odyssey, odyssey-metal4, party, party-capture, party-resume, combined, zelda-library]
 
 permissions:
   contents: read
@@ -50,5 +50,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
         run: |
-          python3 -m unittest discover -s ci -p 'test_nx2apple_capture*.py'
-          python3 ci/nx2apple_build.py
+          python3 -m unittest discover -s ci -p 'test_nx2apple*.py'
+          if [ "$BUILD_GAME" = zelda-library ]; then
+            python3 ci/nx2apple_zelda.py
+          else
+            python3 ci/nx2apple_build.py
+          fi
