@@ -55,4 +55,6 @@ jobs:
       - name: Build four-game IPA and publish to private release
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
-        run: python3 ci/nx2apple_bananza.py
+        run: |
+          python3 -m unittest discover -s ci -p 'test_nx2apple_normalize.py'
+          python3 ci/nx2apple_bananza.py

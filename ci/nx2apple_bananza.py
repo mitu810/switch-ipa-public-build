@@ -17,6 +17,7 @@ TITLE = '040074A01BF12000'
 VERSION = 458752
 TAG = 'nx2apple-bananza-library-v458752'
 INPUT_TAG = 'rom-bananza-v458752'
+NORMALIZATION_SHA256 = '9cb2d12dc23983683b742614774507bb4ce378611d29cec13c0a50cba268c10f'
 OLD_COMMIT = '994ede741c0dae6e6ccd1d06a3f177c4f3b9ac61'
 OLD_GAMES = [
     ('0100000000010000', 'nx2apple-odyssey-1.4.1-metal4'),
@@ -142,6 +143,13 @@ def main():
         update.mkdir(parents=True)
         for name in ['exefs', 'romfs']:
             shutil.move(str(dump / name), update / name)
+        normalization_file = b.download(INPUT_TAG, 'obsolete-product100.json', b.DATA / 'normalization')
+        if sha(normalization_file) != NORMALIZATION_SHA256:
+            raise ValueError('Unexpected normalization manifest digest')
+        from nx2apple_normalize import normalize_dump
+        normalization = normalize_dump(update / 'romfs', b.DATA / 'obsolete-base-files',
+            json.loads(normalization_file.read_text()))
+        print('Verified and quarantined obsolete base files:', normalization['quarantined_obsolete_files'], flush=True)
         work, fwdir = b.DATA / 'game-build', b.DATA / 'frameworks'
         logged([sys.executable, b.ENGINE / 'scripts/build_ipa_from_nsp.py', dump,
             '--title-id', TITLE, '--work-dir', work, '--shell-framework', fwdir,
@@ -212,7 +220,8 @@ def main():
             'nx2apple_commit': b.capture(['git', '-C', b.NX, 'rev-parse', 'HEAD']).strip(),
             'engine_commit': b.capture(['git', '-C', b.ENGINE, 'rev-parse', 'HEAD']).strip(),
             'run_id': os.environ['GITHUB_RUN_ID'], 'files': outputs, 'game_data': data,
-            'preserved_games': preserved, 'external_shaders': external, 'all_four_games_verified': True}
+            'preserved_games': preserved, 'external_shaders': external, 'input_normalization': normalization,
+            'all_four_games_verified': True}
         path = b.DATA / 'output-manifest.json'
         path.write_text(json.dumps(result, indent=2) + '\n')
         b.run(['gh', 'release', 'upload', TAG, path, '--repo', b.REPO, '--clobber'])
