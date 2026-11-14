@@ -83,20 +83,41 @@ def logged(args, log):
             raise RuntimeError(f'{log.stem} failed ({process.returncode}); private diagnostics contain the log')
 
 
-def old_framework(title, tag):
-    dest = b.DATA / ('previous-' + title)
-    m = b.restore_files(tag, 'output-manifest.json', dest, {'framework.tar.gz'})
+def existing_frameworks():
+    # The installed three-game package also contains Odyssey's supplemental PSO
+    # table. Restore that exact package rather than earlier per-game archives.
+    tag = 'nx2apple-zelda-library-1.9.0'
+    dest = b.DATA / 'existing-library'
+    m = b.restore_files(tag, 'output-manifest.json', dest, {'NX2Apple.ipa'})
     if m['nx2apple_commit'] != OLD_COMMIT:
         raise ValueError('Unexpected revision for an existing game')
-    with tarfile.open(dest / 'framework.tar.gz') as source:
-        source.extractall(dest / 'frameworks', filter='data')
-    (dest / 'framework.tar.gz').unlink()
-    framework = dest / 'frameworks' / f'DmGame{title}.framework'
-    manifest = json.loads((framework / 'game.manifest.json').read_text())
-    if manifest['title_id'] != title or manifest['loader'] != 'FH':
-        raise ValueError('Existing framework is not self-contained')
-    return framework, {'title_id': title, 'source_tag': tag, 'manifest': manifest,
-        'executable_sha256': sha(framework / manifest['framework_executable'])}
+    frameworks, records = [], []
+    with zipfile.ZipFile(dest / 'NX2Apple.ipa') as source:
+        for title, _ in OLD_GAMES:
+            name = f'DmGame{title}.framework'
+            prefix = 'Payload/DmShell.app/Frameworks/' + name + '/'
+            framework = dest / 'frameworks' / name
+            for item in source.infolist():
+                if not item.filename.startswith(prefix) or item.is_dir():
+                    continue
+                relative = Path(item.filename[len(prefix):])
+                if relative.is_absolute() or '..' in relative.parts:
+                    raise ValueError('Unsafe framework resource path')
+                target = framework / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with source.open(item) as stream, target.open('wb') as output:
+                    shutil.copyfileobj(stream, output, 8 * 1024 ** 2)
+            manifest = json.loads((framework / 'game.manifest.json').read_text())
+            if manifest['title_id'] != title or manifest['loader'] != 'FH':
+                raise ValueError('Existing framework is not self-contained')
+            executable = framework / manifest['framework_executable']
+            executable.chmod(0o755)
+            frameworks.append(framework)
+            records.append({'title_id': title, 'source_tag': tag, 'manifest': manifest,
+                'executable_sha256': sha(executable),
+                'pso_pairs_sha256': sha(framework / 'dm/pso_pairs.tsv') if (framework / 'dm/pso_pairs.tsv').is_file() else None})
+    (dest / 'NX2Apple.ipa').unlink()
+    return frameworks, records
 
 
 def main():
@@ -135,12 +156,7 @@ def main():
             output.add(framework, arcname=framework.name)
         outputs = [b.upload_file(TAG, archive)]
         archive.unlink()
-        frameworks = []
-        preserved = []
-        for title, tag in OLD_GAMES:
-            fw, record = old_framework(title, tag)
-            frameworks.append(fw)
-            preserved.append(record)
+        frameworks, preserved = existing_frameworks()
         frameworks.append(framework)
         shell = b.DATA / 'shell'
         env = dict(os.environ, SHELL_DIR=str(shell), DM_ENGINE_DIR=str(b.ENGINE),
@@ -170,7 +186,8 @@ def main():
                                'sha256': sha(p)} for p in files]})
                 shutil.rmtree(msl)
         # Preserve the Increased Memory Limit request for signers that support it.
-        b.run(['codesign', '--force', '--sign', '-', '--entitlements', shell / 'Gen/DmShell.entitlements', app])
+        b.run(['xattr', '-cr', app])
+        b.run(['codesign', '--force', '--sign', '-', '--entitlements', shell / 'Gen/DmShell.entitlements', app / 'DmShell'])
         payload = b.DATA / 'package/Payload'
         payload.mkdir(parents=True)
         shutil.move(str(app), payload / app.name)
