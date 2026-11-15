@@ -105,14 +105,22 @@ int main(void) { @autoreleasepool {
 '''
     result = {}
     for label, source in [('baseline', before), ('candidate', after)]:
-        p = folder / (label + '.m'); p.write_text(pre + helper(source) + post)
+        body = helper(source)
+        if label == 'baseline':
+            # The old expression implicitly loads g_fence. Spell out the exact
+            # read order verified at installed ARM64 PCs 0x49e30/0x49e3c, so
+            # the deterministic hook intercepts that otherwise implicit load.
+            needle = 'uint64_t fence = g_fence + (atomic_load(&g_sub_on) ? 1 : 0);'
+            assert body.count(needle) == 1
+            body = body.replace(needle, 'uint64_t installed_fence = atomic_load(&g_fence);\n    uint64_t fence = installed_fence + (atomic_load(&g_sub_on) ? 1 : 0);')
+        p = folder / (label + '.m'); p.write_text(pre + body + post)
         exe = p.with_suffix('')
         run(['xcrun', '--sdk', 'macosx', 'clang', '-fobjc-arc', '-O2', p, '-framework', 'Foundation', '-o', exe])
         result[label] = [int(line.split()[1]) for line in subprocess.check_output([str(exe)], text=True).splitlines()]
     assert result['baseline'] == [10, 11, 10], result
     assert result['candidate'] == [10, 11, 11], result
     result['expected_fences'] = [10, 11, 11]
-    result['scope'] = 'Production retirement helper with deterministic commit interleaving; no GPU execution.'
+    result['scope'] = 'Production retirement helper with deterministic commit interleaving; baseline read order matches installed ARM64 instructions; no GPU execution.'
     (folder / 'fence-test.json').write_text(json.dumps(result, indent=2) + '\n')
     print('Production helper test: baseline retires one fence early; candidate passes all three schedules.', flush=True)
 
