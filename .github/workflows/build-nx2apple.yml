@@ -1,30 +1,27 @@
-name: Build NX2Apple Bananza four-game library
-run-name: Add Bananza to existing NX2Apple library
+name: Build isolated Bananza host candidate
 on:
   workflow_dispatch:
     inputs:
       game:
-        description: Add Bananza while preserving the existing three games
-        required: true
         type: choice
-        options: [bananza, combined]
+        required: true
+        options: [party]
 permissions:
   contents: read
 concurrency:
-  group: nx2apple-bananza
+  group: nx2apple-bananza-pool-retire
   cancel-in-progress: false
 jobs:
   build:
     runs-on: xcode-27
-    timeout-minutes: 300
+    timeout-minutes: 75
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
       PRIVATE_REPO: mitu810/switch-ipa-builder
       BUILD_GAME: bananza
     steps:
       - uses: actions/checkout@v4
-      - name: Checkout pinned NX2Apple with Switch 2 support
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           repository: LNPANDY/NX2Apple
           ref: 229a6e782bf4299890a59b384fe65b8516dde673
@@ -32,29 +29,15 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Prepare build tools and disk space
+      - name: Prepare pinned host build
         run: |
-          test -d /Applications/Xcode_27.2.app
-          for unused_xcode in /Applications/Xcode*.app; do
-            [ "$unused_xcode" != /Applications/Xcode_27.2.app ] || continue
-            if [ -d "$unused_xcode" ] || [ -L "$unused_xcode" ]; then
-              sudo rm -rf "$unused_xcode"
-            fi
-          done
-          sudo ln -sfn /Applications/Xcode_27.2.app /Applications/Xcode.app
-          xcrun simctl delete all || true
-          xcrun simctl runtime delete all || true
-          brew install xcodegen zstd glslang spirv-cross sevenzip
-          brew install --cask dotnet-sdk
-          python3 -m pip install lz4 'capstone>=5,<6' fonttools nsz zbic backports.zstd
+          brew install xcodegen zstd
+          python3 -m pip install lz4 'capstone>=5,<6' fonttools backports.zstd
           sudo xcodebuild -runFirstLaunch
           xcodebuild -downloadComponent MetalToolchain
           python3 nx2apple/tools/engine.py sync
           git -C nx2apple/engine submodule update --init --recursive
-          df -h .
-      - name: Build four-game IPA and publish to private release
+      - name: Rebuild only the game host and validate production fence logic
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
-        run: |
-          python3 -m unittest discover -s ci -p 'test_nx2apple_normalize.py'
-          python3 ci/nx2apple_bananza.py
+        run: python3 ci/build_host_candidate.py
