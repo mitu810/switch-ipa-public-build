@@ -1,27 +1,25 @@
-name: Probe Metal GPU for isolated diagnostics
+name: Build isolated iPad Metal self-test
 on:
   workflow_dispatch:
     inputs:
       game:
-        description: Compatibility input for the existing registered workflow
+        description: Compatibility input for the registered workflow
         required: true
         type: choice
         options: [party]
 permissions:
   contents: read
 jobs:
-  probe:
+  build:
     runs-on: xcode-27
     timeout-minutes: 10
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
-      - name: Compile and inspect Metal capabilities
-        run: |
-          xcrun --sdk macosx clang -fobjc-arc -fblocks -O2 -framework Foundation -framework Metal ci/metal_gpu_probe.m -o metal_gpu_probe
-          ./metal_gpu_probe | tee gpu-probe.json
+      - name: Compile synthetic iOS Metal framework
+        run: python3 ci/build_native_probe.py
       - uses: actions/upload-artifact@v4
         with:
-          name: metal-gpu-capabilities
-          path: gpu-probe.json
+          name: native-metal-self-test
+          path: native-probe-unsigned.zip
