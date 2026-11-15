@@ -182,6 +182,11 @@ def main():
         config = subprocess.check_output([sys.executable, ios / 'tools/gen_build.py', ENGINE / 'dm/host', gen], env=env, text=True)
         flags = subprocess.check_output([sys.executable, ios / 'tools/gen_embed.py', patched, gen / 'embed.S', 'main', 'sdk'], text=True).strip()
         (gen / 'dm.xcconfig').write_text(config + '\nOTHER_LDFLAGS = $(inherited) $(DM_FRAMEWORKS) ' + flags + '\n')
+        # xcodegen validates the sibling app/container targets too, although only
+        # DmShellGame is compiled here. Supply their ordinary staging paths.
+        (gen / 'framework.xcconfig').write_text('OTHER_LDFLAGS = $(inherited) ' + flags + '\n')
+        (gen / 'Assets.xcassets').mkdir()
+        shutil.copytree(original / 'dm', gen / 'dm')
         shutil.copytree(original / 'dm', gen / 'framework/dm')
         shutil.copy2(original / 'profile.tsv', gen / 'framework/profile.tsv')
         manifest['built_at'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
