@@ -1,0 +1,21 @@
+name: Probe Metal GPU for isolated diagnostics
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: xcode-27
+    timeout-minutes: 10
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and inspect Metal capabilities
+        run: |
+          xcrun --sdk macosx clang -fobjc-arc -fblocks -O2 -framework Foundation -framework Metal ci/metal_gpu_probe.m -o metal_gpu_probe
+          ./metal_gpu_probe | tee gpu-probe.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: metal-gpu-capabilities
+          path: gpu-probe.json
