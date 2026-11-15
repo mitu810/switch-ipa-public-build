@@ -192,10 +192,16 @@ def main():
         manifest['built_at'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
         manifest['local_host_patch'] = 'pool-retire-fence-259f4a55665f'
         (gen / 'framework/game.manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+        namespace = subprocess.check_output([sys.executable, ios / 'tools/gen_objc_namespace.py', '--print-tag',
+                    '--game', TITLE, '--framework-name', NAME, '--header', gen / 'framework/objc_namespace.h',
+                    '--exports', gen / 'framework/exported_symbols.txt', ENGINE / 'dm/host', ENGINE / 'dm/gfx',
+                    ios / 'Sources', ios / 'framework'], text=True).strip()
+        with (gen / 'dm.xcconfig').open('a') as f: f.write('DM_NS_TAG = ' + namespace + '\n')
         run(['xcodegen', 'generate', '-q', '--spec', 'project-framework.yml'], cwd=ios, env=env)
         out = b.DATA / 'xcode'
         run(['xcodebuild', '-project', 'DmIOS.xcodeproj', '-target', 'DmShellGame', '-configuration', 'Release', '-sdk', 'iphoneos',
              'CODE_SIGNING_ALLOWED=NO', 'CODE_SIGNING_REQUIRED=NO', 'CODE_SIGN_IDENTITY=', 'PRODUCT_NAME=' + NAME,
+             'DM_NS_TAG=' + namespace,
              'PRODUCT_BUNDLE_IDENTIFIER=org.nxnative.040074a01bf12000.game', 'DM_XCODE_OUTPUT_ROOT=' + str(out),
              'SYMROOT=' + str(out / 'Build/Products'), 'OBJROOT=' + str(out / 'Build/Intermediates.noindex')],
              log=b.DATA / 'host-build.log', cwd=ios, env=env)
