@@ -10,18 +10,29 @@ static void save_report(NSString *status) {
     [NSFileManager.defaultManager createDirectoryAtPath:output.stringByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
     [d writeToFile:output atomically:YES]; fprintf(stderr,"METAL_PROBE %s cases=%lu\n",status.UTF8String,(unsigned long)results.count);
 }
-static NSDictionary *one_case(id<MTLDevice> dev,id<MTLLibrary> lib,NSString *name,BOOL nested,BOOL explicitViews,BOOL indirect,BOOL classic) {
+static NSDictionary *one_case(id<MTLDevice> dev,id<MTLLibrary> lib,NSString *name,BOOL nested,BOOL explicitViews,BOOL indirect,BOOL classic,int storage,int residenceMode) {
     NSError *err=nil;
     MTLTextureDescriptor *td=[MTLTextureDescriptor new];td.textureType=MTLTextureType2DArray;td.width=td.height=8;td.arrayLength=4;td.mipmapLevelCount=3;td.pixelFormat=MTLPixelFormatRGBA8Unorm;td.storageMode=MTLStorageModeShared;td.usage=MTLTextureUsageShaderRead|MTLTextureUsagePixelFormatView;
-    id<MTLTexture> root=[dev newTextureWithDescriptor:td];root.label=[name stringByAppendingString:@" root"];
-    if(!root)return @{@"name":name,@"error":@"root allocation failed"};
-    for(NSUInteger lv=0;lv<3;lv++)for(NSUInteger layer=0;layer<4;layer++){
+    id<MTLBuffer> backing=nil;id<MTLHeap> heap=nil;id<MTLTexture> root=nil;
+    if(storage==1){
+        td.textureType=MTLTextureType2D;td.arrayLength=1;td.mipmapLevelCount=1;
+        NSUInteger row=MAX(64ul,[dev minimumLinearTextureAlignmentForPixelFormat:td.pixelFormat]);backing=[dev newBufferWithLength:row*8 options:MTLResourceStorageModeShared];root=[backing newTextureWithDescriptor:td offset:0 bytesPerRow:row];
+        uint8_t *px=backing.contents;for(NSUInteger y=0;y<8;y++)for(NSUInteger x=0;x<8;x++)for(int c=0;c<4;c++)px[y*row+x*4+c]=(uint8_t)(73+c);
+    }else if(storage==2){
+        td.storageMode=MTLStorageModePrivate;MTLSizeAndAlign n=[dev heapTextureSizeAndAlignWithDescriptor:td];MTLHeapDescriptor *hd=[MTLHeapDescriptor new];hd.type=MTLHeapTypePlacement;hd.storageMode=MTLStorageModePrivate;hd.size=n.size;heap=[dev newHeapWithDescriptor:hd];root=[heap newTextureWithDescriptor:td offset:0];
+    }else root=[dev newTextureWithDescriptor:td];
+    root.label=[name stringByAppendingString:@" root"];if(!root)return @{@"name":name,@"error":@"root allocation failed"};
+    if(storage==0){for(NSUInteger lv=0;lv<3;lv++)for(NSUInteger layer=0;layer<4;layer++){
         NSUInteger w=8>>lv;uint8_t px[8*8*4];for(NSUInteger i=0;i<w*w;i++)for(int c=0;c<4;c++)px[4*i+c]=(uint8_t)(64*lv+4*layer+c+1);
         [root replaceRegion:MTLRegionMake2D(0,0,w,w) mipmapLevel:lv slice:layer withBytes:px bytesPerRow:w*4 bytesPerImage:w*w*4];
+    }}else if(storage==2){
+        id<MTLBuffer> upload=[dev newBufferWithLength:1024 options:MTLResourceStorageModeShared];uint8_t *p=upload.contents;for(int y=0;y<4;y++)for(int x=0;x<4;x++)for(int c=0;c<4;c++)p[y*256+x*4+c]=(uint8_t)(73+c);
+        id<MTLCommandQueue> q=[dev newCommandQueue];id<MTLCommandBuffer> cb=[q commandBuffer];id<MTLBlitCommandEncoder> blit=[cb blitCommandEncoder];[blit copyFromBuffer:upload sourceOffset:0 sourceBytesPerRow:256 sourceBytesPerImage:1024 sourceSize:MTLSizeMake(4,4,1) toTexture:root destinationSlice:2 destinationLevel:1 destinationOrigin:MTLOriginMake(0,0,0)];[blit endEncoding];[cb commit];[cb waitUntilCompleted];
     }
+    NSUInteger lv=storage==1?0:1,slice=storage==1?0:2,count=storage==1?1:2;
     MTLTextureSwizzleChannels sw=MTLTextureSwizzleChannelsMake(MTLTextureSwizzleBlue,MTLTextureSwizzleGreen,MTLTextureSwizzleRed,MTLTextureSwizzleAlpha);
-    id<MTLTexture> parent=[root newTextureViewWithPixelFormat:root.pixelFormat textureType:MTLTextureType2DArray levels:NSMakeRange(1,2) slices:NSMakeRange(2,2) swizzle:sw];parent.label=[name stringByAppendingString:@" parent"];
-    id<MTLTexture> view=nested?[parent newTextureViewWithPixelFormat:parent.pixelFormat textureType:MTLTextureType2D levels:NSMakeRange(0,2) slices:NSMakeRange(0,1) swizzle:sw]:[root newTextureViewWithPixelFormat:root.pixelFormat textureType:MTLTextureType2D levels:NSMakeRange(1,2) slices:NSMakeRange(2,1) swizzle:sw];view.label=[name stringByAppendingString:@" fitted"];
+    id<MTLTexture> parent=[root newTextureViewWithPixelFormat:root.pixelFormat textureType:MTLTextureType2DArray levels:NSMakeRange(lv,count) slices:NSMakeRange(slice,storage==1?1:2) swizzle:sw];parent.label=[name stringByAppendingString:@" parent"];
+    id<MTLTexture> view=nested?[parent newTextureViewWithPixelFormat:parent.pixelFormat textureType:MTLTextureType2D levels:NSMakeRange(0,count) slices:NSMakeRange(0,1) swizzle:sw]:[root newTextureViewWithPixelFormat:root.pixelFormat textureType:MTLTextureType2D levels:NSMakeRange(lv,count) slices:NSMakeRange(slice,1) swizzle:sw];view.label=[name stringByAppendingString:@" fitted"];
     if(!parent||!view)return @{@"name":name,@"error":@"view allocation failed"};
     id<MTLFunction> fn=[lib newFunctionWithName:indirect?@"read_indirect":@"read_direct"];
     MTLComputePipelineDescriptor *pd=[MTLComputePipelineDescriptor new];pd.computeFunction=fn;pd.label=name;id<MTLComputePipelineState> ps=[dev newComputePipelineStateWithDescriptor:pd options:MTLPipelineOptionNone reflection:nil error:&err];
@@ -31,7 +42,7 @@ static NSDictionary *one_case(id<MTLDevice> dev,id<MTLLibrary> lib,NSString *nam
     id<MTLBuffer> args=indirect?[dev newBufferWithLength:ae.encodedLength options:MTLResourceStorageModeShared]:nil;
     if(indirect){[ae setArgumentBuffer:args offset:0];[ae setTexture:view atIndex:0];[ae setBuffer:out offset:0 atIndex:1];}
     MTLResidencySetDescriptor *rd=[MTLResidencySetDescriptor new];rd.initialCapacity=8;
-    id<MTLResidencySet> rs=[dev newResidencySetWithDescriptor:rd error:&err];[rs addAllocation:root];[rs addAllocation:out];if(args)[rs addAllocation:args];if(explicitViews){[rs addAllocation:parent];[rs addAllocation:view];}[rs commit];
+    id<MTLResidencySet> rs=[dev newResidencySetWithDescriptor:rd error:&err];if(residenceMode&1)[rs addAllocation:root];[rs addAllocation:out];if(args)[rs addAllocation:args];if(residenceMode&2){[rs addAllocation:parent];[rs addAllocation:view];}if(residenceMode&4){if(backing)[rs addAllocation:backing];if(heap)[rs addAllocation:heap];}[rs commit];
     __block NSString *gpuError=nil;
     if(classic){
         id<MTLCommandQueue> q=[dev newCommandQueue];[q addResidencySet:rs];id<MTLCommandBuffer> cb=[q commandBuffer];id<MTLComputeCommandEncoder> ce=[cb computeCommandEncoder];[ce setComputePipelineState:ps];
@@ -47,7 +58,7 @@ static NSDictionary *one_case(id<MTLDevice> dev,id<MTLLibrary> lib,NSString *nam
         if(dispatch_semaphore_wait(done,dispatch_time(DISPATCH_TIME_NOW,15*NSEC_PER_SEC)))gpuError=@"GPU completion timed out";
     }
     const float *f=out.contents;NSMutableArray *values=[NSMutableArray array];for(int c=0;c<4;c++)[values addObject:isfinite(f[c])?@(f[c]):(id)@"nonfinite"];float want[]={75/255.f,74/255.f,73/255.f,76/255.f};BOOL equal=YES;for(int c=0;c<4;c++)if(!isfinite(f[c])||fabsf(f[c]-want[c])>0.0001f)equal=NO;
-    NSMutableDictionary *r=[@{@"name":name,@"nested":@(nested),@"explicit_views":@(explicitViews),@"indirect":@(indirect),@"classic":@(classic),@"pixel_matches":@(equal),@"values":values,@"root_id":@(root.gpuResourceID._impl),@"parent_id":@(parent.gpuResourceID._impl),@"view_id":@(view.gpuResourceID._impl),@"view_parent_is_root":@(view.parentTexture==root)} mutableCopy];if(gpuError)r[@"gpu_error"]=gpuError;return r;
+    NSMutableDictionary *r=[@{@"name":name,@"storage":@(storage),@"residence_mode":@(residenceMode),@"nested":@(nested),@"explicit_views":@(explicitViews),@"indirect":@(indirect),@"classic":@(classic),@"pixel_matches":@(equal),@"values":values,@"root_id":@(root.gpuResourceID._impl),@"parent_id":@(parent.gpuResourceID._impl),@"view_id":@(view.gpuResourceID._impl),@"view_parent_is_root":@(view.parentTexture==root)} mutableCopy];if(gpuError)r[@"gpu_error"]=gpuError;return r;
 }
 static void run_probe(void){@autoreleasepool{
     results=[NSMutableArray array];save_report(@"started");id<MTLDevice> dev=MTLCreateSystemDefaultDevice();if(![dev supportsFamily:MTLGPUFamilyMetal4]){save_report(@"no_metal4");return;}
@@ -55,9 +66,13 @@ static void run_probe(void){@autoreleasepool{
     NSError *e=nil;id<MTLLibrary> lib=[dev newLibraryWithSource:source options:nil error:&e];if(!lib){[results addObject:@{@"error":e.localizedDescription?:@"library failed"}];save_report(@"compile_failed");return;}
     for(int indirect=0;indirect<2;indirect++)for(int nested=0;nested<2;nested++)for(int explicit=0;explicit<2;explicit++){
         NSString *n=[NSString stringWithFormat:@"m4_%@_%@_%@",indirect?@"indirect":@"direct",nested?@"nested":@"root",explicit?@"views_resident":@"root_resident"];
-        NSDictionary *r=one_case(dev,lib,n,nested,explicit,indirect,NO);[results addObject:r];save_report(@"running");fprintf(stderr,"METAL_PROBE_CASE %s\n",[[r description] UTF8String]);
+        NSDictionary *r=one_case(dev,lib,n,nested,explicit,indirect,NO,0,explicit?3:1);[results addObject:r];save_report(@"running");fprintf(stderr,"METAL_PROBE_CASE %s\n",[[r description] UTF8String]);
     }
-    [results addObject:one_case(dev,lib,@"classic_root_direct",NO,NO,NO,YES)];save_report(@"complete");
+    [results addObject:one_case(dev,lib,@"classic_root_direct",NO,NO,NO,YES,0,1)];for(int st=1;st<=2;st++)for(int ind=0;ind<2;ind++)for(int mode=4;mode<=7;mode++)if(mode!=6){
+        NSString *n=[NSString stringWithFormat:@"%@_%@_res%d",st==1?@"buffer_backed":@"heap_backed",ind?@"indirect":@"direct",mode];
+        @try{[results addObject:one_case(dev,lib,n,NO,(mode&2)!=0,ind,NO,st,mode)];}@catch(NSException *e){[results addObject:@{@"name":n,@"exception":e.reason?:@"unknown exception"}];}
+        save_report(@"running");
+    }save_report(@"complete");
 }}
 @interface NXMetalProbeVC:UIViewController @end
 @implementation NXMetalProbeVC
