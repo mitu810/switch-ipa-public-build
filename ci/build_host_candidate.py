@@ -18,7 +18,7 @@ import nx2apple_build as b
 
 TITLE = '040074A01BF12000'
 NAME = 'DmGame' + TITLE
-TAG = 'nx2apple-bananza-frame-step-20261116-v2'
+TAG = 'nx2apple-bananza-frame-step-20261116-v3'
 BASE_TAG = 'nx2apple-bananza-library-v458752'
 ROOT = Path.cwd()
 ENGINE = b.ENGINE
@@ -150,6 +150,16 @@ def main():
         run(['git', '-C', ENGINE, 'apply', patch])
         after = source.read_text()
         test_fence_logic(before, after, b.DATA)
+        run(['git', '-C', ENGINE, 'apply', '--check', ROOT / 'ci/frame-step-catchup.patch'])
+        run(['git', '-C', ENGINE, 'apply', ROOT / 'ci/frame-step-catchup.patch'])
+        for name, src in [('fstep-default', ENGINE / 'dm/gfx/tests/t_fstep.c'),
+                          ('fstep-catchup', ROOT / 'ci/test_catchup.c')]:
+            exe = b.DATA / name
+            run(['xcrun', '--sdk', 'macosx', 'clang', '-std=c11', '-O2', '-I' + str(ENGINE / 'dm/gfx/nvn'), src, '-o', exe])
+            run([exe], log=b.DATA / (name + '.log'))
+        assert '86 checks, 0 failed' in (b.DATA / 'fstep-default.log').read_text()
+        assert '8 checks passed' in (b.DATA / 'fstep-catchup.log').read_text()
+
         # A cold-path diagnostic confirms pool retirement is reached in the game.
         needle = 'uint64_t fence = open ? open : atomic_load(&g_fence);'
         assert after.count(needle) == 1
@@ -206,7 +216,7 @@ def main():
         shutil.copytree(original / 'dm', gen / 'framework/dm')
         shutil.copy2(original / 'profile.tsv', gen / 'framework/profile.tsv')
         manifest['built_at'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        manifest['local_host_patch'] = 'pool-retire-fence-259f4a55665f+bananza-frame-step-experimental'
+        manifest['local_host_patch'] = 'pool-retire-fence-259f4a55665f+bananza-frame-step+catchup-diagnostic'
         (gen / 'framework/game.manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
         namespace = subprocess.check_output([sys.executable, ios / 'tools/gen_objc_namespace.py', '--print-tag',
                     '--game', TITLE, '--framework-name', NAME, '--header', gen / 'framework/objc_namespace.h',
@@ -236,6 +246,7 @@ def main():
                  'baseline_executable_sha256': sha(original / NAME), 'candidate_executable_sha256': sha(fw / NAME),
                  'baseline_module_sections_sha256': module_sections, 'candidate_module_sections_sha256': module_expected,
                  'frame_step_adapter': adapter_audit, 'adapter_test': json.loads((ROOT / 'ci/stub-test.json').read_text()),
+                 'catchup_diagnostic': {'default_unchanged': True, 'default_checks': 86, 'no_catchup_checks': 8, 'patch_sha256': sha(ROOT / 'ci/frame-step-catchup.patch')},
                  'runtime_profile_unchanged': True,
                  'changed_runtime_tables': ['main.fixups.tsv', 'main.cuts.tsv'], 'shader_chain_unchanged': manifest['chain'],
                  'upstream_patch': '259f4a55665f7402bbede5bae98bebee36dee1dd', 'run_id': os.environ['GITHUB_RUN_ID'],

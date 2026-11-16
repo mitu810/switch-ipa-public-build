@@ -1,0 +1,53 @@
+diff --git a/dm/gfx/nvn/hle_nvn.c b/dm/gfx/nvn/hle_nvn.c
+index a4d838a..475c6aa 100644
+--- a/dm/gfx/nvn/hle_nvn.c
++++ b/dm/gfx/nvn/hle_nvn.c
+@@ -2354,6 +2354,18 @@ static int fstep_hold(void) {
+     }
+     return h;
+ }
++// Diagnostic comparison: some adapters also feed the step into a game's own
++// pacing/retirement logic. Keep step == hold to distinguish those effects from
++// automatic performance recovery. Not a verified fix; late-frame game time is
++// intentionally not caught up in this mode. Default behavior is unchanged.
++static int fstep_catchup(void) {
++    static int on = -1;
++    if (on < 0) {
++        const char *e = getenv("DM_FSTEP_CATCHUP"); on = !(e && !strcmp(e, "0"));
++        if (!on) LOG("[nvn] frame step: catch-up disabled; game step equals its hold (DM_FSTEP_CATCHUP=0)");
++    }
++    return on;
++}
+ // Once per present, before this frame's period is taken: the time since the previous frame's start (shown) and the frame's cost decide this frame's hold and the next frame's step.
+ // Cost = max(CPU: the time between the frames' starts without the pacing wait, GPU: the latest finished frame's GPU time), in vsyncs
+ static void fstep_tick(const win_t *o, int c) {
+@@ -2390,6 +2402,7 @@ static void fstep_tick(const win_t *o, int c) {
+     g_fs.per_vsync = fstep_hz() / 60;
+     g_fs.smax = dm_fps_step_max;   // the stub's largest step (Mario Kart World: 2): frames held longer than the game steps would play in slow motion
+     g_fs.no_payback = fps_high();   // at 120 fps the game steps by its target, not by the step: a late frame is slow motion, so three raise the hold whatever the average
++    g_fs.no_catchup = !fstep_catchup();
+     int n = nvn_fstep_next(&g_fs, shown, cost, kmin, kmax, fixed, cslow || gslow);
+     if (dm_fps_state) __atomic_store_n((uint32_t *)(dm_fps_state + 0x20), (uint32_t)n, __ATOMIC_RELAXED);
+     atomic_store(&g_fs_k, g_fs.k);
+diff --git a/dm/gfx/nvn/nvn_fstep.h b/dm/gfx/nvn/nvn_fstep.h
+index 404fc7f..98e4e3b 100644
+--- a/dm/gfx/nvn/nvn_fstep.h
++++ b/dm/gfx/nvn/nvn_fstep.h
+@@ -69,6 +69,7 @@ typedef struct {
+     double last_cost[3];      // the last three frames' costs, oldest first
+     int smax;                 // set by the caller: the largest step the game takes (its stub's STEP_MAX; 0 = FSTEP_MAX)
+     int no_payback;           // set by the caller: 1 = the game does not take the step (120 fps: it steps by its target), so three late frames raise the hold whatever the average
++    int no_catchup;           // diagnostic: game step equals its hold, without replaying a missed vsync; late frames then lose game time (DM_FSTEP_CATCHUP=0)
+     uint64_t late, paid, ups, downs, failed, probes; double dropped;   // statistics for the log
+ } nvn_fstep;
+ 
+@@ -151,7 +152,8 @@ static inline int nvn_fstep_next(nvn_fstep *s, double shown, double cost, int km
+     else if ((slow || nvn_fstep_same(s)) && s->k > kmin && s->since >= s->hold && !s->trial) {   // probe: straight to kmin, so the controller sees the whole deadline
+         s->k = kmin; s->downs++; s->probes++; s->trial = FSTEP_RUN; s->probe = 1; s->grace = FSTEP_GRACE; s->fit_run = s->late_run = 0; s->pa = s->pb = 0; s->plate = s->ptotal = 0;
+     }
+-    s->step = s->k + (s->debt >= 1 && s->k < smax);
++    if (s->no_catchup) s->debt = 0;
++    s->step = s->k + (!s->no_catchup && s->debt >= 1 && s->k < smax);
+     s->paid += s->step > s->k;
+     return s->step;
+ }
