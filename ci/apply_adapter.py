@@ -34,7 +34,7 @@ def patch(main, fixups, cuts, patch_source, tools_dir):
     ctx = types.SimpleNamespace(here=lambda: start + len(words) * 4, emit=words.append,
                                 site=site, put=put, state=state, step_max=0)
     module.FRAME_STEP[hdr['BUILD_ID']](ctx)
-    assert ctx.step_max == 3 and len(changes) == 1 and changes[0][0] == 0x204a50
+    assert ctx.step_max == 3 and len(changes) == 1 and changes[0][0] == 0x204a54
     # Exactly one branch in the existing image changes. No old rewrite is moved.
     check = bytearray(data)
     for at, before, after, _ in changes:

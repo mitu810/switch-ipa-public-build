@@ -18,7 +18,7 @@ import nx2apple_build as b
 
 TITLE = '040074A01BF12000'
 NAME = 'DmGame' + TITLE
-TAG = 'nx2apple-bananza-frame-step-20261116'
+TAG = 'nx2apple-bananza-frame-step-20261116-v2'
 BASE_TAG = 'nx2apple-bananza-library-v458752'
 ROOT = Path.cwd()
 ENGINE = b.ENGINE
@@ -171,7 +171,7 @@ def main():
 
         from apply_adapter import patch as patch_adapter
         adapter_source = ROOT / 'ci/bananza_patches.py'
-        run([sys.executable, ROOT / 'ci/test_stub.py', adapter_source, ENGINE / 'dm/tools'])
+        run([sys.executable, ROOT / 'ci/test_stub.py', adapter_source, ENGINE / 'dm/tools', patched / 'main.patched.bin'])
         adapter_audit = patch_adapter(patched / 'main.patched.bin', patched / 'main.fixups.tsv',
                                       patched / 'main.cuts.tsv', adapter_source, ENGINE / 'dm/tools')
         expected_sections = dict(old_sections)

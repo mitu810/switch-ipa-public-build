@@ -7,7 +7,7 @@ from nso_asm import ADRP, B
 
 def frame_step(ctx):
     # main+0x204a18 chooses an interval at controller+0x40 and its reciprocal FPS
-    # at +0x50/+0x54. The shared exit at +0x38 first calls the framework's FPS
+    # at +0x50/+0x54. The shared exit at +0x3c first calls the framework's FPS
     # setter (+0x204c60), then its interval setter (+0x204c00), which updates both
     # NVN presentation and framework+0x88. Patching before both setters keeps
     # their values consistent. x20 is the controller, x19 the framework; w8/w9,
@@ -15,8 +15,11 @@ def frame_step(ctx):
     # Dynamic mode is enabled only for the observed [1,3] interval range and
     # controller+0x58 == 0. Other ranges/modes publish the game's chosen interval
     # as fixed, retaining cinematic and forced-rate behavior.
-    site = 0x204a50
-    ctx.site(site, '815240b9')  # ldr w1,[x20,#0x50]
+    # Dynamic branches target 0x204a54 directly and bypass the fallback load at
+    # 0x204a50. Hook the actual shared exit, preserving the incoming FPS in w1
+    # whenever the host step is inactive or the mode belongs to the game.
+    site = 0x204a54
+    ctx.site(site, 'e00313aa')  # mov x0,x19
     ctx.step_max = 3
     start = ctx.here()
     words, labels, pending = [], {}, []
@@ -44,9 +47,9 @@ def frame_step(ctx):
     branch('cond', 'count_original', cond=8)  # b.hi (invalid host step)
     emit(0xb9004288)                  # str w8,[x20,#0x40] interval
     emit(0x52800789)                  # mov w9,#60
-    emit(0x1ac80d29)                  # sdiv w9,w9,w8
-    emit(0xb9005289)                  # str w9,[x20,#0x50] target FPS
-    emit(0xb9005689)                  # str w9,[x20,#0x54] current FPS
+    emit(0x1ac80d21)                  # sdiv w1,w9,w8
+    emit(0xb9005281)                  # str w1,[x20,#0x50] target FPS
+    emit(0xb9005681)                  # str w1,[x20,#0x54] current FPS
     branch('b', 'count')
     label('fixed')
     emit(0xb9404288)                  # ldr w8,[x20,#0x40] game's interval
@@ -59,7 +62,7 @@ def frame_step(ctx):
     emit(0x8b284231)                  # add x17,x17,w8,uxtw
     emit(0xf9001a11)                  # str x17,[x16,#0x30] vsyncs stepped
     label('original')
-    emit(0xb9405281)                  # ldr w1,[x20,#0x50]
+    emit(0xaa1303e0)                  # mov x0,x19 (original instruction)
     emit(B(start + 4 * len(words), site + 4))
     for index, kind, target, reg, cond in pending:
         at, to = start + index * 4, labels[target]
