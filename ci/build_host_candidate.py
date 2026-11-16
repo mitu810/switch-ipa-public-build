@@ -18,7 +18,7 @@ import nx2apple_build as b
 
 TITLE = '040074A01BF12000'
 NAME = 'DmGame' + TITLE
-TAG = 'nx2apple-bananza-frame-step-20261116-v2'
+TAG = 'nx2apple-bananza-buffer-trace-20261116-v1'
 BASE_TAG = 'nx2apple-bananza-library-v458752'
 ROOT = Path.cwd()
 ENGINE = b.ENGINE
@@ -155,6 +155,15 @@ def main():
         assert after.count(needle) == 1
         source.write_text(after.replace(needle, needle + '\n    static unsigned notices; if (gone.count && notices++ < 4) MLOG("pool retirement fence fix active: %lu buffers, fence %llu, open %llu", (unsigned long)gone.count, (unsigned long long)fence, (unsigned long long)open);'))
 
+        from apply_gpu_trace import apply as apply_trace
+        trace_audit = apply_trace(source, ROOT / 'ci/nvn_gpu_buffer_trace.h')
+        trace_test = b.DATA / 'buffer-trace-test'
+        run(['xcrun', '--sdk', 'macosx', 'clang', '-fobjc-arc', '-O2', '-framework', 'Foundation',
+             ROOT / 'ci/test_buffer_trace.m', '-o', trace_test])
+        run([trace_test], log=b.DATA / 'buffer-trace-test.log')
+        assert 'non-retaining destruction checks passed' in (b.DATA / 'buffer-trace-test.log').read_text()
+
+
         patched = b.DATA / 'patched'; patched.mkdir()
         old_sections = sections(original / NAME)
         module_sections = {}
@@ -168,22 +177,6 @@ def main():
             (patched / (module + '.patched.bin')).write_bytes(data)
             module_sections.update({','.join(p): hashlib.sha256(old_sections[p]).hexdigest() for p in parts})
             for p in (original / 'dm').glob(module + '.*.tsv'): shutil.copy2(p, patched / p.name)
-
-        from apply_adapter import patch as patch_adapter
-        adapter_source = ROOT / 'ci/bananza_patches.py'
-        run([sys.executable, ROOT / 'ci/test_stub.py', adapter_source, ENGINE / 'dm/tools', patched / 'main.patched.bin'])
-        adapter_audit = patch_adapter(patched / 'main.patched.bin', patched / 'main.fixups.tsv',
-                                      patched / 'main.cuts.tsv', adapter_source, ENGINE / 'dm/tools')
-        expected_sections = dict(old_sections)
-        main_data = (patched / 'main.patched.bin').read_bytes()
-        hdr = dict(line[2:].split() for line in (patched / 'main.fixups.tsv').read_text().splitlines())
-        n0, po = len(old_sections['__TEXT', '__dmmainx0']), int(hdr['PATCH_OFF'], 16)
-        expected_sections['__TEXT', '__dmmainx0'] = main_data[:n0]
-        expected_sections['__DMmainW', '__img'] = main_data[n0:po]
-        tail = main_data[po:]; tail += bytes((-len(tail)) % 0x4000)
-        expected_sections['__TEXT', '__dmmainx1'] = tail
-        assert expected_sections['__DMmainW', '__img'] == old_sections['__DMmainW', '__img']
-        module_expected = {key: hashlib.sha256(expected_sections[tuple(key.split(','))]).hexdigest() for key in module_sections}
 
         profile = ENGINE / 'dm/games' / TITLE
         shutil.copy2(original / 'dm/shader_map.tsv', profile / 'shader_map.tsv')
@@ -206,7 +199,7 @@ def main():
         shutil.copytree(original / 'dm', gen / 'framework/dm')
         shutil.copy2(original / 'profile.tsv', gen / 'framework/profile.tsv')
         manifest['built_at'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        manifest['local_host_patch'] = 'pool-retire-fence-259f4a55665f+bananza-frame-step-experimental'
+        manifest['local_host_patch'] = 'pool-retire-fence-259f4a55665f'
         (gen / 'framework/game.manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
         namespace = subprocess.check_output([sys.executable, ios / 'tools/gen_objc_namespace.py', '--print-tag',
                     '--game', TITLE, '--framework-name', NAME, '--header', gen / 'framework/objc_namespace.h',
@@ -224,22 +217,16 @@ def main():
         fw = out / 'Build/Products/Release-iphoneos' / original.name
         assert fw.is_dir(), 'Candidate framework missing'
         new_sections = sections(fw / NAME)
-        for key, digest in module_expected.items(): assert hashlib.sha256(new_sections[tuple(key.split(','))]).hexdigest() == digest, key
+        for key, digest in module_sections.items(): assert hashlib.sha256(new_sections[tuple(key.split(','))]).hexdigest() == digest, key
         for old in (original / 'dm').rglob('*'):
-            if old.is_file():
-                relative = old.relative_to(original / 'dm')
-                expected = patched / relative if str(relative) in ['main.fixups.tsv', 'main.cuts.tsv'] else old
-                if str(relative) in ['main.fixups.tsv', 'main.cuts.tsv']: shutil.copy2(expected, fw / 'dm' / relative)
-                assert (fw / 'dm' / relative).read_bytes() == expected.read_bytes()
+            if old.is_file(): assert (fw / 'dm' / old.relative_to(original / 'dm')).read_bytes() == old.read_bytes()
         assert (fw / 'profile.tsv').read_bytes() == (original / 'profile.tsv').read_bytes()
-        audit = {'schema': 1, 'title_id': TITLE, 'status': 'frame_step_candidate_built',
+        audit = {'schema': 1, 'title_id': TITLE, 'status': 'host_only_candidate_built',
                  'baseline_executable_sha256': sha(original / NAME), 'candidate_executable_sha256': sha(fw / NAME),
-                 'baseline_module_sections_sha256': module_sections, 'candidate_module_sections_sha256': module_expected,
-                 'frame_step_adapter': adapter_audit, 'adapter_test': json.loads((ROOT / 'ci/stub-test.json').read_text()),
-                 'runtime_profile_unchanged': True,
-                 'changed_runtime_tables': ['main.fixups.tsv', 'main.cuts.tsv'], 'shader_chain_unchanged': manifest['chain'],
+                 'embedded_module_sections_sha256_unchanged': module_sections, 'runtime_profile_unchanged': True,
+                 'all_runtime_tables_unchanged': True, 'shader_chain_unchanged': manifest['chain'],
                  'upstream_patch': '259f4a55665f7402bbede5bae98bebee36dee1dd', 'run_id': os.environ['GITHUB_RUN_ID'],
-                 'fence_test': json.loads((b.DATA / 'fence-test.json').read_text()), 'candidate_gameplay_not_yet_verified': True}
+                 'fence_test': json.loads((b.DATA / 'fence-test.json').read_text()), 'mine_crash_fix_not_yet_verified': True, 'buffer_lifetime_diagnostic': trace_audit, 'diagnostic_not_a_fix': True}
         (b.DATA / 'candidate-audit.json').write_text(json.dumps(audit, indent=2) + '\n')
         candidate = b.DATA / 'candidate-framework.zip'
         with zipfile.ZipFile(candidate, 'w', zipfile.ZIP_DEFLATED, compresslevel=1) as z:
@@ -249,7 +236,7 @@ def main():
         result = dict(audit, files=outputs)
         p = b.DATA / 'output-manifest.json'; p.write_text(json.dumps(result, indent=2) + '\n')
         run(['gh', 'release', 'upload', TAG, p, b.DATA / 'candidate-audit.json', b.DATA / 'fence-test.json', '--repo', b.REPO, '--clobber'])
-        print('Frame-step candidate built; one main branch and appended stub, original shaders/quality/profile and SDK preserved; private output only.', flush=True)
+        print('Host-only candidate built; embedded modules, profile, runtime tables and shader chain unchanged; private output only.', flush=True)
     finally:
         b.diagnostics(TAG)
 
