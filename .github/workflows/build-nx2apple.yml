@@ -1,20 +1,17 @@
-name: Build Bananza buffer lifetime diagnostic
+name: Build NX2Apple v1.5.0 shared iPad shell
 on:
   workflow_dispatch:
     inputs:
       game:
-        type: choice
         required: true
+        type: choice
         options: [party]
 permissions:
   contents: read
-concurrency:
-  group: nx2apple-bananza-buffer-trace
-  cancel-in-progress: false
 jobs:
   build:
     runs-on: xcode-27
-    timeout-minutes: 75
+    timeout-minutes: 35
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
       PRIVATE_REPO: mitu810/switch-ipa-builder
@@ -24,20 +21,18 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: LNPANDY/NX2Apple
-          ref: 229a6e782bf4299890a59b384fe65b8516dde673
+          ref: f82be32dd41cbb167b66d8a85cedab947415f81b
           path: nx2apple
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Prepare pinned host build
+      - name: Prepare the official shell sources
         run: |
-          brew install xcodegen zstd
-          python3 -m pip install lz4 'capstone>=5,<6' fonttools backports.zstd
+          brew install xcodegen
+          python3 -m pip install fonttools
           sudo xcodebuild -runFirstLaunch
-          xcodebuild -downloadComponent MetalToolchain
           python3 nx2apple/tools/engine.py sync
-          git -C nx2apple/engine submodule update --init --recursive
-      - name: Build optional lifetime trace and validate non-retaining observation
+      - name: Build and verify the shell
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
-        run: python3 ci/build_host_candidate.py
+        run: python3 ci/build_v150_shell.py
