@@ -18,7 +18,7 @@ TAG = 'nx2apple-zelda-library-1.9.0'
 INPUT_TAG = 'rom-zelda-botw'
 
 
-def logged(args, log, env):
+def logged(args, log, env, release_tag=TAG):
     """Private progress survives runner loss; reserve room for final diagnostics."""
     with log.open('wb') as output:
         process = subprocess.Popen([str(a) for a in args], stdout=output, stderr=subprocess.STDOUT,
@@ -36,7 +36,7 @@ def logged(args, log, env):
                     source.seek(max(0, log.stat().st_size - 16384))
                     tail.write_bytes(source.read())
                 try:
-                    subprocess.run(['gh', 'release', 'upload', TAG, str(progress), str(tail),
+                    subprocess.run(['gh', 'release', 'upload', release_tag, str(progress), str(tail),
                                     '--repo', b.REPO, '--clobber'], timeout=60, check=False,
                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 except subprocess.TimeoutExpired:

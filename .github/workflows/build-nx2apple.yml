@@ -1,17 +1,17 @@
-name: Build Bananza with the NX2Apple v1.5.0 engine
-run-name: Bananza v1.5.0 engine and Metal shaders
+name: Rebuild existing library games using NX2Apple v1.5.0
+run-name: ${{ inputs.game }} on the NX2Apple v1.5.0 engine
 on:
   workflow_dispatch:
     inputs:
       game:
-        description: Add Bananza while preserving the existing three games
+        description: Game framework and shaders to rebuild
         required: true
         type: choice
-        options: [bananza, combined]
+        options: [odyssey, party, zelda]
 permissions:
   contents: read
 concurrency:
-  group: nx2apple-bananza-v150
+  group: nx2apple-v150-${{ inputs.game }}
   cancel-in-progress: false
 jobs:
   build:
@@ -20,7 +20,7 @@ jobs:
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
       PRIVATE_REPO: mitu810/switch-ipa-builder
-      BUILD_GAME: bananza
+      BUILD_GAME: ${{ inputs.game }}
     steps:
       - uses: actions/checkout@v4
       - name: Checkout pinned NX2Apple with Switch 2 support
@@ -52,9 +52,8 @@ jobs:
           python3 nx2apple/tools/engine.py sync
           git -C nx2apple/engine submodule update --init --recursive
           df -h .
-      - name: Build Bananza framework and publish to private release
+      - name: Build game framework and publish privately
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
         run: |
-          python3 -m unittest discover -s ci -p 'test_nx2apple_normalize.py'
-          python3 ci/build_bananza_v150.py
+          python3 ci/build_games_v150.py
