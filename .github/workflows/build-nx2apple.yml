@@ -1,24 +1,30 @@
-name: Build NX2Apple v1.5.0 shared iPad shell
+name: Build Bananza with the NX2Apple v1.5.0 engine
+run-name: Bananza v1.5.0 engine and Metal shaders
 on:
   workflow_dispatch:
     inputs:
       game:
+        description: Add Bananza while preserving the existing three games
         required: true
         type: choice
-        options: [party]
+        options: [bananza, combined]
 permissions:
   contents: read
+concurrency:
+  group: nx2apple-bananza-v150
+  cancel-in-progress: false
 jobs:
   build:
     runs-on: xcode-27
-    timeout-minutes: 35
+    timeout-minutes: 300
     env:
       DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
       PRIVATE_REPO: mitu810/switch-ipa-builder
       BUILD_GAME: bananza
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - name: Checkout pinned NX2Apple with Switch 2 support
+        uses: actions/checkout@v4
         with:
           repository: LNPANDY/NX2Apple
           ref: f82be32dd41cbb167b66d8a85cedab947415f81b
@@ -26,13 +32,29 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Prepare the official shell sources
+      - name: Prepare build tools and disk space
         run: |
-          brew install xcodegen
-          python3 -m pip install fonttools
+          test -d /Applications/Xcode_27.2.app
+          for unused_xcode in /Applications/Xcode*.app; do
+            [ "$unused_xcode" != /Applications/Xcode_27.2.app ] || continue
+            if [ -d "$unused_xcode" ] || [ -L "$unused_xcode" ]; then
+              sudo rm -rf "$unused_xcode"
+            fi
+          done
+          sudo ln -sfn /Applications/Xcode_27.2.app /Applications/Xcode.app
+          xcrun simctl delete all || true
+          xcrun simctl runtime delete all || true
+          brew install xcodegen zstd glslang spirv-cross sevenzip
+          brew install --cask dotnet-sdk
+          python3 -m pip install lz4 'capstone>=5,<6' fonttools nsz zbic backports.zstd
           sudo xcodebuild -runFirstLaunch
+          xcodebuild -downloadComponent MetalToolchain
           python3 nx2apple/tools/engine.py sync
-      - name: Build and verify the shell
+          git -C nx2apple/engine submodule update --init --recursive
+          df -h .
+      - name: Build Bananza framework and publish to private release
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
-        run: python3 ci/build_v150_shell.py
+        run: |
+          python3 -m unittest discover -s ci -p 'test_nx2apple_normalize.py'
+          python3 ci/build_bananza_v150.py

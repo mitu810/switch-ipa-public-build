@@ -49,7 +49,7 @@ def validate_exefs(folder):
             raise ValueError('Unrecognized Bananza update: ' + module)
 
 
-def logged(args, log):
+def logged(args, log, release_tag=TAG):
     with log.open('wb') as output:
         process = subprocess.Popen([str(a) for a in args], stdout=output, stderr=subprocess.STDOUT,
             env=dict(os.environ, IOS_PULL='1'))
@@ -65,7 +65,7 @@ def logged(args, log):
                     source.seek(max(0, log.stat().st_size - 32768))
                     tail.write_bytes(source.read())
                 try:
-                    subprocess.run(['gh', 'release', 'upload', TAG, progress, tail, '--repo', b.REPO, '--clobber'],
+                    subprocess.run(['gh', 'release', 'upload', release_tag, progress, tail, '--repo', b.REPO, '--clobber'],
                         check=False, timeout=45, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 except subprocess.TimeoutExpired:
                     pass
