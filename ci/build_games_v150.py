@@ -8,6 +8,7 @@ from pathlib import Path
 
 import nx2apple_build as build
 import nx2apple_zelda as legacy_zelda
+from nx2apple_capture import MAIN_BUILD_ID
 from nx2apple_capture_data import validate_capture
 
 NX_COMMIT = 'f82be32dd41cbb167b66d8a85cedab947415f81b'
@@ -15,7 +16,7 @@ ENGINE_PIN = '99224562186a8fdb7e97afb872319a21941ec317'
 CHAIN = 'b-df1800562702'
 GAMES = {
     'odyssey': ('0100000000010000', 'v393216', '1.4.1', 'rom-odyssey-1.4.1'),
-    'party': ('010036B0034E4000', 'v1', '1.1.0', 'rom-party-1.1.0'),
+    'party': ('010036B0034E4000', 'v131072', '1.1.0', 'rom-party-1.1.0'),
     'zelda': ('01007EF00011E000', 'v1114112', '1.9.0', 'rom-zelda-botw'),
 }
 
@@ -47,7 +48,14 @@ def command_for(mode, title):
         archive.extractall(folder, filter='data')
     request = folder / 'device-capture-request.json'
     captures = folder / 'glslc_capture'
-    assert validate_capture(json.loads(request.read_text()), captures) == json.loads((folder / 'capture-manifest.json').read_text())
+    metadata = json.loads(request.read_text())
+    saved = json.loads((folder / 'capture-manifest.json').read_text())
+    assert validate_capture(metadata, captures) == saved
+    assert saved['main_build_id'] == MAIN_BUILD_ID and saved['package_version'] == 'v1'
+    # The new extractor reports the CNMT update version. The replay tool still
+    # checks the exact main module build ID before using any captured shaders.
+    request = folder / 'v131072-capture-request.json'
+    request.write_text(json.dumps({**metadata, 'package_version': 'v131072'}) + '\n')
     override.write_text(f'DM_GLSLC_CAPTURE=games/{title}/glslc_capture\nDM_NVN_COUNT=1\n')
     return ([sys.executable, build.ROOT / 'ci/nx2apple_capture.py', '--device-captures', captures,
             '--engine', build.ENGINE, '--request', request],
